@@ -1,2 +1,7 @@
+
+ifdef DECL
+FL:=-DDECL
+endif
+
 all:
-	gcc -O0 -g -o bt.exe bt.c -ldbghelp && ./bt
+	gcc -g -o bt.exe bt.c $(FL) -ldbghelp && ./bt

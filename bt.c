@@ -1,111 +1,81 @@
+// Copyright(C) 2019 Nicolas Sauzede. All rights reserved.
+// Use of this source code is governed by an MIT license
+// that can be found in the LICENSE.txt file.
+
 #include <inttypes.h>
 #include <stdio.h>
 
-#include <process.h>
 #include <windows.h>
-
+#include <process.h>
 #include <dbghelp.h>
 
-void a2l(void *p) {
-#if 1
+#ifdef DECL
+#define WDECL __declspec(dllexport)
+#else
+#define WDECL
+#endif
+
+WDECL void a2l(void *p) {
+	char prog[256];
+	GetModuleFileName(NULL, prog, sizeof(prog));
 	char addr[100];
 	snprintf(addr, sizeof(addr), "0x%" PRIX64, (uint64_t)p);
-//	_spawnl(_P_WAIT, "addr2line", "addr2line", "-e", "bt.exe", addr);
 	char *cmd = "\\msys64\\mingw64\\bin\\addr2line.exe";
-	intptr_t res = _spawnl(_P_WAIT, cmd, cmd, "-e", "bt.exe", addr, NULL);
-//	printf("res=%p errno=%d\n", res, errno);
-#else
-	char cmd[100];
-	snprintf(cmd, sizeof(cmd), "addr2line -e bt.exe 0x%" PRIX64, (uint64_t)p);
-	_popen(cmd);
-#endif
+	intptr_t res = _spawnl(_P_WAIT, cmd, cmd, "-e", prog, addr, NULL);
 }
 
-int main();
-
-BOOL __stdcall myReadProcMem(HANDLE  hProcess,
-                                          DWORD64 qwBaseAddress,
-                                          PVOID   lpBuffer,
-                                          DWORD   nSize,
-                                          LPDWORD lpNumberOfBytesRead)
-{
-    SIZE_T st;
-    BOOL   bRet = ReadProcessMemory(hProcess, (LPVOID)qwBaseAddress, lpBuffer, nSize, &st);
-    *lpNumberOfBytesRead = (DWORD)st;
-    printf("ReadMemory: hProcess: %p, baseAddr: %p, buffer: %p, size: %d, read: %d, result: %d\n", hProcess, (LPVOID) qwBaseAddress, lpBuffer, nSize, (DWORD) st, (DWORD) bRet);
-    return bRet;
-}
-
-void init(HANDLE ht) {
-	DWORD htr = GetCurrentThreadId();
-	printf("hello init thread %lx\n", htr);
-	BOOL res = SymInitialize(0, "", FALSE);
-	printf("res=%d\n", res);
-	CONTEXT c;
-	memset(&c, 0, sizeof(c));
-	c.ContextFlags = CONTEXT_FULL;
 #if 0
-	if (GetThreadContext(ht, &c)) {
-		void *rip = (void *)c.Rip;
-		printf("eip= %p\n", rip);
-		a2l(rip);
-		printf("main= %p\n", main);
-		a2l(main);
-	}
+#define backtrace(buffer, size) CaptureStackBackTrace(0, size, buffer, NULL)
 #else
-	RtlCaptureContext(&c);
+WDECL int backtrace(void **buffer, int size) {
+	return CaptureStackBackTrace(0, size, buffer, NULL);
+}
 #endif
-	STACKFRAME64 s;
-	s.AddrPC.Offset = c.Rip;
-	s.AddrPC.Mode = AddrModeFlat;
-	s.AddrFrame.Offset = c.Rsp;
-	s.AddrFrame.Mode = AddrModeFlat;
-	s.AddrStack.Offset = c.Rsp;
-	s.AddrStack.Mode = AddrModeFlat;
-	printf("offs= 0x%" PRIx64 "\n", s.AddrPC.Offset);
-	printf("err=%lx\n", GetLastError());
-	void *frames[3];
-	int nframes = sizeof(frames) / sizeof(frames[0]);
-	memset(frames, 0, sizeof(frames));
-	for (int i = 0; i < nframes; i++) {
-		res = StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), ht, &s, &c, 
-//			0,
-			myReadProcMem,
-			SymFunctionTableAccess64,  SymGetModuleBase64, NULL);
-		printf("res=%d err=%lx\n", res, GetLastError());
-		printf("offs= 0x%" PRIx64 "\n", s.AddrPC.Offset);
-		frames[i] = (void *)s.AddrPC.Offset;
+
+WDECL void printStack( void )
+{
+	unsigned int i;
+	void *stack[100];
+	unsigned short frames;
+	HANDLE hpr = GetCurrentProcess();
+	int slen = sizeof(stack) / sizeof(stack[0]);
+	frames = backtrace(stack, slen);
+	SymInitialize(hpr, NULL, TRUE);
+#define MAX_NAME_LEN 100
+	int ssi = sizeof(SYMBOL_INFO) + MAX_NAME_LEN * sizeof(TCHAR);
+	char *_si = malloc(ssi);
+	SYMBOL_INFO *psi = (SYMBOL_INFO *)_si;
+	for( i = 0; i < frames; i++ )
+	{
+		DWORD64 disp;
+		memset(_si, 0, ssi);
+		psi->SizeOfStruct = sizeof(SYMBOL_INFO);
+		psi->MaxNameLen = MAX_NAME_LEN;
+		BOOL ret = SymFromAddr(hpr, (DWORD64)stack[i], &disp, psi);
+		printf( "%d|", ret);
+		if (psi->Name[0])
+		printf( "%s", psi->Name);
+		if (disp)
+		printf( "+0x%" PRIx64, disp);
+		if (psi->Name[0])
+		printf( " ");
+		printf( "0x%" PRIx64 ": ", stack[i]);
+		a2l(stack[i]);
 	}
-	for (int i = 0; i < nframes; i++) {
-		a2l(frames[i]);
-	}
+	free(_si);
 }
 
-void init0(HANDLE ht) {
-	init(ht);
+WDECL int bar(int a) {
+	printStack();
+	return a * 42;
 }
 
-void init1(HANDLE ht) {
-	init0(ht);
+WDECL int foo(int a) {
+	return bar(a);
 }
 
-void init2(HANDLE ht) {
-	init1(ht);
-}
-
-DWORD WINAPI MyThread(LPVOID lp) {
-	HANDLE htr = GetCurrentThread();
-	printf("hello MyThread thread %p\n", htr);
-	init(lp);
-	return 0;
-}
-
-int main() {
+WDECL int main(int argc, char *argv[]) {
 	setbuf(stdout, 0);
-	DWORD htr = GetCurrentThreadId();
-	printf("hello main thread %lx\n", htr);
-//	HANDLE ht = CreateThread(NULL, 0, MyThread, htr, 0, NULL);
-//	printf("createthread returned %p\n", ht);
-	init2(GetCurrentThread());
+	foo(argc);
 	return 0;
 }
